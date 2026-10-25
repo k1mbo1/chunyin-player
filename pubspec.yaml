@@ -1,0 +1,33 @@
+name: chunyin_mobile
+description: 纯音播放器手机版 —— 顶级音质音乐播放器（本地无损 + 全球电台 + 海量曲库）
+publish_to: 'none'
+version: 1.4.0+5
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  just_audio: ^0.9.40
+  audio_service: ^0.18.15
+  http: ^1.2.0
+  on_audio_query: ^2.9.0
+  permission_handler: ^11.3.0
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter:
+  uses-material-design: true
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon.png"
+  adaptive_icon_background: "#10141c"
+  adaptive_icon_foreground: "assets/icon.png"

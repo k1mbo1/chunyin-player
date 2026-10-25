@@ -1,0 +1,51 @@
+# 纯音播放器 iOS 云构建工作流
+# 用途：在 GitHub 免费 macOS Runner 上打包无签名 ipa（用户端用「全能签」自签安装）
+# 触发：推送到 main 分支自动构建，或在 Actions 页手动触发
+# 产物：ipa 同时上传到 Release（ios-v1.4.0 标签）与 Actions Artifact
+name: iOS Build ipa
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter 依赖
+        run: flutter pub get
+
+      - name: 打包无签名 ipa
+        run: |
+          flutter build ios --release --no-codesign
+          mkdir -p Payload
+          cp -r build/ios/iphoneos/Runner.app Payload/
+          zip -qry chunyin_player_ios_unsigned.ipa Payload
+          mkdir -p build/ios/ipa
+          mv chunyin_player_ios_unsigned.ipa build/ios/ipa/
+
+      - name: 发布到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-v1.4.0
+          name: 纯音播放器 iOS v1.4.0
+          body: 纯音播放器手机版 iOS 无签名 ipa（全能签自签安装）
+          files: build/ios/ipa/*.ipa
+
+      - name: 上传 ipa 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunyin-ios-ipa
+          path: build/ios/ipa/*.ipa
+          retention-days: 30
