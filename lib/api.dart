@@ -193,6 +193,7 @@ String _webUnescape(String s) => s
     .replaceAll('&nbsp;', ' ')
     .replaceAll('&amp;', '&')
     .replaceAll('\\u0026', '&')
+    .replaceAll(r'\&', '&')
     .replaceAll('&lt;', '<')
     .replaceAll('&gt;', '>')
     .trim();
@@ -260,9 +261,11 @@ Future<List<WebTrack>> kuwoSearch(String keyword, {int n = 30}) async {
   for (final t in list.take(n)) {
     final rid = ((t['MUSICRID'] ?? '') as String).replaceAll('MUSIC_', '');
     if (rid.isEmpty) continue;
+    final title = _webUnescape('${t['SONGNAME'] ?? ''}');
+    if (_noiseMark.hasMatch(title)) continue;
     final dur = double.tryParse('${t['DURATION'] ?? ''}') ?? 0;
     out.add(WebTrack(
-      _webUnescape('${t['SONGNAME'] ?? ''}'),
+      title,
       _webUnescape('${t['ARTIST'] ?? ''}'),
       _webUnescape('${t['ALBUM'] ?? ''}'),
       dur,
@@ -290,11 +293,13 @@ Future<List<WebTrack>> neteaseSearch(String keyword, {int n = 30}) async {
   for (final s in songs.take(n)) {
     final sid = '${s['id'] ?? ''}';
     if (sid.isEmpty) continue;
+    final name = '${s['name'] ?? ''}';
+    if (_noiseMark.hasMatch(name)) continue;
     final artists = (s['artists'] ?? []) as List;
     final artist = artists.take(2).map((a) => '${a['name'] ?? ''}').join('/');
     final dur = ((s['duration'] ?? 0) as num) / 1000.0;
     out.add(WebTrack(
-      '${s['name'] ?? ''}',
+      name,
       artist,
       '${s['album']?['name'] ?? ''}',
       dur,
@@ -333,12 +338,14 @@ Future<List<WebTrack>> qqSearch(String keyword, {int n = 30}) async {
   for (final s in songs.take(n)) {
     final mid = '${s['mid'] ?? ''}';
     if (mid.isEmpty) continue;
+    final name = _webUnescape('${s['name'] ?? ''}');
+    if (_noiseMark.hasMatch(name)) continue;
     final singers = (s['singer'] ?? []) as List;
     final artist = singers.take(2).map((a) => '${a['name'] ?? ''}').join('/');
     var dur = (s['interval'] ?? -1) as int;
     if (dur < 0) dur = (((s['duration'] ?? 0) as num) / 1000).round();
     out.add(WebTrack(
-      _webUnescape('${s['name'] ?? ''}'),
+      name,
       artist,
       _webUnescape('${s['album']?['name'] ?? ''}'),
       dur.toDouble(),
@@ -349,10 +356,18 @@ Future<List<WebTrack>> qqSearch(String keyword, {int n = 30}) async {
   return out;
 }
 
-/// 全网聚合搜索（网易云 + QQ + B站）：交错合并 + (title, artist) 去重，
-/// 结果全量显示、不过滤
+/// 明显非原唱版本（纯音乐/伴奏/翻奏等）——搜索列表直接过滤
+final _noiseMark = RegExp(
+    r'伴奏|纯音乐|钢琴版|钢琴曲|吉他版|古筝版|小提琴版|八音盒|BGM|背景音乐|'
+    r'白噪音|白噪|助眠|雨声|翻奏|[Cc]over|instrumental|铃声|琴谱|曲谱|'
+    r'教学|慢速|降调|升调|消音|无人声|变调|片段|DJ[^（）()]{0,8}版|[Rr]emix|混音版'
+    r'|\b[Bb]eat\s*$',
+    caseSensitive: false);
+
+/// 全网聚合搜索（网易云 + QQ + 酷我 + B站）：交错合并 + (title, artist) 去重，
+/// 非原唱版本（伴奏/纯音乐/翻奏等）直接过滤
 Future<List<WebTrack>> webSearch(String keyword,
-    {List<String> sources = const ['netease', 'qq', 'bili']}) async {
+    {List<String> sources = const ['netease', 'qq', 'kuwo', 'bili']}) async {
   Future<List<WebTrack>> shield(Future<List<WebTrack>> f) => f
       .timeout(const Duration(seconds: 15), onTimeout: () => <WebTrack>[])
       .catchError((_) => <WebTrack>[]);
@@ -360,6 +375,7 @@ Future<List<WebTrack>> webSearch(String keyword,
   for (final src in sources) {
     if (src == 'netease') futures.add(shield(neteaseSearch(keyword)));
     if (src == 'qq') futures.add(shield(qqSearch(keyword)));
+    if (src == 'kuwo') futures.add(shield(kuwoSearch(keyword)));
     if (src == 'bili') futures.add(shield(biliSearch(keyword)));
   }
   final lists = await Future.wait(futures);
@@ -460,6 +476,7 @@ Future<List<WebTrack>> biliSearch(String keyword, {int n = 30}) async {
         .replaceAll('&lt;', '<')
         .replaceAll('&gt;', '>')
         .trim();
+    if (_noiseMark.hasMatch(title)) continue;
     out.add(WebTrack(
       title,
       '${it['author'] ?? 'B站UP主'}',

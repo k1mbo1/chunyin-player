@@ -55,6 +55,11 @@
 	</array>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>用于扫描并播放您设备上的本地音乐</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

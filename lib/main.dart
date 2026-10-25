@@ -721,14 +721,14 @@ class ArchivePage extends StatefulWidget {
 }
 
 class _ArchivePageState extends State<ArchivePage> {
-  // 模式：true = 全网聚合搜索（网易云+QQ）；false = 公版曲库（Internet Archive）
+  // 模式：true = 全网聚合搜索（网易云+QQ+酷我+B站）；false = 公版曲库（Internet Archive）
   bool _webMode = true;
 
   // ---- 全网搜索状态 ----
   List<WebTrack> _webResults = [];
   bool _webLoading = false;
   String? _webErr;
-  List<String> _sources = const ['netease', 'qq', 'bili'];
+  List<String> _sources = const ['netease', 'qq', 'kuwo', 'bili'];
   String _webTitle = '全网聚合 · 每一首都可播放（B站音频无会员限制）';
   final _webCtrl = TextEditingController();
 
@@ -764,7 +764,7 @@ class _ArchivePageState extends State<ArchivePage> {
           _webErr = '没有找到相关歌曲，换个关键词试试';
         } else {
           _webTitle =
-              '共 ${t.length} 首 · 全部可播放（B站音频无会员限制，付费歌曲自动匹配免费来源）';
+              '共 ${t.length} 首 · 四源聚合（B站音频无会员限制，付费歌曲自动匹配免费来源）';
         }
       });
     } catch (e) {
@@ -952,7 +952,7 @@ class _ArchivePageState extends State<ArchivePage> {
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             children: [
               for (final (label, srcs) in const [
-                ('全网聚合（含B站）', ['netease', 'qq', 'bili']),
+                ('全网聚合（四源）', ['netease', 'qq', 'kuwo', 'bili']),
                 ('网易云+QQ', ['netease', 'qq']),
                 ('仅网易云', ['netease']),
               ])
@@ -1009,7 +1009,11 @@ class _ArchivePageState extends State<ArchivePage> {
 
   Widget _webTile(WebTrack t, int index) {
     final isBili = t.src == 'bili';
-    final srcName = isBili ? 'B站' : (t.src == 'qq' ? 'QQ' : '网易云');
+    final srcName = isBili
+        ? 'B站'
+        : (t.src == 'qq'
+            ? 'QQ'
+            : (t.src == 'kuwo' ? '酷我' : '网易云'));
     final dur = t.duration > 0
         ? fmtTime(Duration(seconds: t.duration.round()))
         : '--:--';

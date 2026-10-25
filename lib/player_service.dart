@@ -11,6 +11,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 
 import 'api.dart' as webapi;
+import 'proxy.dart' as proxy;
 
 /// 统一曲目模型（本地 / 电台 / Internet Archive / 全网搜索）
 class PTrack {
@@ -139,15 +140,18 @@ class AudioPlayerHandler extends BaseAudioHandler {
       if (r == null) {
         throw Exception('暂时无法获取播放链接：${t.title}');
       }
+      // iOS(AVPlayer) 不支持自定义请求头：带 Referer 的直链
+      // 统一走本机代理转发；无特殊头的直链原样返回
+      final playUrl = await proxy.proxiedUrl(r.url, r.headers);
       try {
-        await _player.setUrl(r.url, headers: r.headers);
+        await _player.setUrl(playUrl);
       } catch (_) {
         // 直链可能已失效，重新解析一次
         r = await resolve();
         if (r == null) {
           throw Exception('播放链接已失效：${t.title}');
         }
-        await _player.setUrl(r.url, headers: r.headers);
+        await _player.setUrl(await proxy.proxiedUrl(r.url, r.headers));
       }
       await _player.play();
     } finally {
