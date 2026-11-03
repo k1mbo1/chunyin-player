@@ -1701,8 +1701,13 @@ class _MyPageState extends State<MyPage> {
   Future<void> _playAt(int index) async {
     final list = _data.map((e) => PTrack.fromJson(e)).toList();
     if (list.isEmpty) return;
+    // 收藏/历史可能混合本地与在线曲目，按同类拆分后作为队列，
+    // 避免把本地文件塞进在线解析流程
+    final target = list[index];
+    final same = list.where((e) => e.isWeb == target.isWeb).toList();
+    final i = same.indexWhere((e) => e.id == target.id);
     try {
-      await gHandler.loadQueue(list, index);
+      await gHandler.loadQueue(same, i < 0 ? 0 : i);
     } catch (e) {
       if (mounted) playErrorSnackBar(context, e);
     }

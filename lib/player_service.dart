@@ -333,13 +333,22 @@ class AudioPlayerHandler extends BaseAudioHandler {
       final idx = (m['index'] as num?)?.toInt() ?? 0;
       if (idx < 0 || idx >= list.length) return false;
       final pos = Duration(milliseconds: (m['position'] as num?)?.toInt() ?? 0);
-      await loadQueue(list, idx, autoplay: false);
-      if (!_webMode) {
-        await _player.seek(pos);
-      } else {
-        _pendingResumePos = pos;
+      if (m['web'] == true || list[idx].isWeb) {
+        // 在线曲目：启动时不解析直链（避免拖慢冷启动），
+        // 仅恢复迷你条信息，首次点播放时再解析并 seek 到原进度
+        _tracks
+          ..clear()
+          ..addAll(list);
+        _webMode = true;
+        _webIndex = idx;
+        queue.add(list.map((t) => t.toMediaItem()).toList());
+        mediaItem.add(list[idx].toMediaItem());
         _pendingResumeIndex = idx;
+        _pendingResumePos = pos;
+        return true;
       }
+      await loadQueue(list, idx, autoplay: false);
+      await _player.seek(pos);
       return true;
     } catch (_) {
       return false;
