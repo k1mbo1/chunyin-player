@@ -1,6 +1,8 @@
 // 纯音播放器手机版 —— 主界面
 // 四大音源：本地音乐（全格式无损）/ 全球电台 / 全网聚合搜索（网易云+QQ）/ Internet Archive
 // 深色 HiFi 风格，与 PC 版一致（#10141c 底 + #37e2c4 青色点缀）
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:audio_service/audio_service.dart';
@@ -9,8 +11,10 @@ import 'package:permission_handler/permission_handler.dart';
 
 import 'api.dart';
 import 'player_service.dart';
+import 'store.dart';
 
 late AudioPlayerHandler gHandler;
+final _rootMessenger = GlobalKey<ScaffoldMessengerState>();
 
 // ---------------- 配色 ----------------
 const cBg = Color(0xFF10141c);
@@ -43,6 +47,7 @@ Future<void> main() async {
     statusBarIconBrightness: Brightness.light,
     systemNavigationBarColor: cPanel,
   ));
+  await Store.init();
   gHandler = await AudioService.init(
     builder: () => AudioPlayerHandler(),
     config: const AudioServiceConfig(
@@ -52,6 +57,20 @@ Future<void> main() async {
       androidStopForegroundOnPause: true,
     ),
   );
+  // 恢复上次播放队列（不自动播放，显示在迷你条，点播放继续）
+  await gHandler.restoreSession();
+  // 播放失败（已自动切源兜底）→ 轻提示，不打断操作
+  gHandler.errorStream.listen((msg) {
+    final m = _rootMessenger.currentState;
+    if (m == null) return;
+    m.hideCurrentSnackBar();
+    m.showSnackBar(SnackBar(
+      content: Text(msg, style: const TextStyle(fontSize: 13)),
+      backgroundColor: const Color(0xFF233043),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 3),
+    ));
+  });
   runApp(const ChunyinApp());
 }
 
@@ -63,6 +82,9 @@ class ChunyinApp extends StatelessWidget {
     return MaterialApp(
       title: '纯音播放器',
       debugShowCheckedModeBanner: false,
+      scaffoldMessengerKey: _rootMessenger,
+      // 固定深色 HiFi 主题：系统切换浅色时不再出现白底闪烁
+      themeMode: ThemeMode.dark,
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
@@ -135,12 +157,69 @@ class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
 
   @override
+  void initState() {
+    super.initState();
+    // 首次启动引导：说明音源与权限，只弹一次
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!Store.onboarded && mounted) _showOnboarding();
+    });
+  }
+
+  void _showOnboarding() {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => AlertDialog(
+        backgroundColor: cCard,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('欢迎使用纯音播放器',
+            style: TextStyle(color: Colors.white, fontSize: 18)),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _OnboardRow(Icons.travel_explore, '曲库 · 四源聚合',
+                '网易云 / QQ / 酷我 / B站，付费歌曲自动匹配免费源，B站支持 Hi-Res'),
+            _OnboardRow(Icons.library_music, '本地 · 全格式无损',
+                '扫描手机内音乐，FLAC/APE 等原样播放（首次使用需授予媒体权限）'),
+            _OnboardRow(Icons.radio, '电台 · 300+ 全球电台',
+                '支持后台与锁屏控制，插拔耳机自动暂停'),
+            _OnboardRow(Icons.history, '自动记忆',
+                '退出后再次打开可继续上次进度；收藏与历史随时回看'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Store.setOnboarded();
+              Navigator.pop(c);
+            },
+            child: const Text('开始使用',
+                style: TextStyle(color: cAccent, fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: IndexedStack(
-          index: _tab,
-          children: const [LocalPage(), RadioPage(), ArchivePage()],
+        // 大屏/平板：限制内容宽度并居中，避免列表被拉得过宽
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: IndexedStack(
+              index: _tab,
+              children: const [
+                LocalPage(),
+                RadioPage(),
+                ArchivePage(),
+                MyPage(),
+              ],
+            ),
+          ),
         ),
       ),
       bottomNavigationBar: Column(
@@ -166,7 +245,48 @@ class _HomeShellState extends State<HomeShell> {
                 selectedIcon: Icon(Icons.public, color: cAccent),
                 label: '曲库',
               ),
+              NavigationDestination(
+                icon: Icon(Icons.person_outline, color: cDim),
+                selectedIcon: Icon(Icons.person, color: cAccent),
+                label: '我的',
+              ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OnboardRow extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String desc;
+  const _OnboardRow(this.icon, this.title, this.desc);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: cAccent, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600)),
+                const SizedBox(height: 2),
+                Text(desc,
+                    style: const TextStyle(color: cDim, fontSize: 12, height: 1.4)),
+              ],
+            ),
           ),
         ],
       ),
@@ -252,18 +372,34 @@ class _LocalPageState extends State<LocalPage> {
   String _q = '';
   bool _loading = true;
   bool _denied = false;
+  bool _needPerm = false;
   String? _err;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    // 首启不直接弹权限框：先确认已授权，未授权则展示说明与授权按钮
+    _init();
+  }
+
+  Future<void> _init() async {
+    final a = await Permission.audio.status;
+    final s = await Permission.storage.status;
+    if (a.isGranted || s.isGranted) {
+      await _scan();
+    } else {
+      setState(() {
+        _loading = false;
+        _needPerm = true;
+      });
+    }
   }
 
   Future<void> _load() async {
     setState(() {
       _loading = true;
       _denied = false;
+      _needPerm = false;
       _err = null;
     });
     try {
@@ -276,6 +412,22 @@ class _LocalPageState extends State<LocalPage> {
         });
         return;
       }
+      await _scan();
+    } catch (e) {
+      setState(() {
+        _err = '读取本地音乐失败';
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _scan() async {
+    setState(() {
+      _loading = true;
+      _err = null;
+      _needPerm = false;
+    });
+    try {
       final songs = await _oq.querySongs(
           sortType: SongSortType.TITLE, orderType: OrderType.ASC_OR_SMALLER);
       final List<PTrack> out = [];
@@ -348,25 +500,68 @@ class _LocalPageState extends State<LocalPage> {
         Expanded(
           child: _loading
               ? loadingBody('正在扫描本地音乐…')
-              : _denied
-                  ? _deniedBody()
-                  : _err != null
-                      ? errorBody(_err!, _load)
-                      : _shown.isEmpty
-                          ? const Center(
-                              child: Text('没有找到音乐文件',
-                                  style: TextStyle(color: cDim, fontSize: 13)))
-                          : ListView.builder(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              itemCount: _shown.length,
-                              itemExtent: 62,
-                              itemBuilder: (c, i) {
-                                final t = _shown[i];
-                                return _localTile(t, i);
-                              },
-                            ),
+              : _needPerm
+                  ? _permBody()
+                  : _denied
+                      ? _deniedBody()
+                      : _err != null
+                          ? errorBody(_err!, _load)
+                          : _shown.isEmpty
+                              ? const Center(
+                                  child: Text('没有找到音乐文件',
+                                      style: TextStyle(color: cDim, fontSize: 13)))
+                              : ListView.builder(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  itemCount: _shown.length,
+                                  itemBuilder: (c, i) => _localTile(_shown[i], i),
+                                ),
         ),
       ],
+    );
+  }
+
+  /// 未授权时的说明页（不在启动瞬间弹系统权限框）
+  Widget _permBody() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.library_music_outlined, color: cAccent, size: 46),
+            const SizedBox(height: 14),
+            const Text('扫描手机里的音乐',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            const Text(
+              '需要读取媒体库权限才能显示本地歌曲（不会上传任何文件）。\n'
+              'FLAC / APE / WAV 等无损格式将原样解码播放。',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: cDim, fontSize: 12.5, height: 1.5),
+            ),
+            const SizedBox(height: 18),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                  backgroundColor: cAccent,
+                  foregroundColor: const Color(0xFF06231d),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 22, vertical: 12)),
+              onPressed: _load,
+              icon: const Icon(Icons.check_circle_outline, size: 18),
+              label: const Text('授予权限并扫描'),
+            ),
+            const SizedBox(height: 10),
+            TextButton(
+              onPressed: () => setState(() => _needPerm = false),
+              child: const Text('先不扫描，直接听在线曲库',
+                  style: TextStyle(color: cDim, fontSize: 12)),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -731,6 +926,9 @@ class _ArchivePageState extends State<ArchivePage> {
   List<String> _sources = const ['netease', 'qq', 'kuwo', 'bili'];
   String _webTitle = '全网聚合 · 每一首都可播放（B站音频无会员限制）';
   final _webCtrl = TextEditingController();
+  List<String> _suggestions = [];
+  Timer? _sugDebounce;
+  List<String> _recent = [];
 
   // ---- 公版曲库状态 ----
   List<IaTrack> _tracks = [];
@@ -743,20 +941,57 @@ class _ArchivePageState extends State<ArchivePage> {
   @override
   void initState() {
     super.initState();
+    _recent = Store.recentSearches;
     _browse('etree', '现场音乐 Live Music');
+  }
+
+  @override
+  void dispose() {
+    _sugDebounce?.cancel();
+    _webCtrl.dispose();
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  /// 输入防抖：400ms 后拉联想词（不打断用户输入）
+  void _onWebInput(String v) {
+    _sugDebounce?.cancel();
+    final kw = v.trim();
+    if (kw.isEmpty) {
+      if (_suggestions.isNotEmpty) setState(() => _suggestions = []);
+      return;
+    }
+    _sugDebounce = Timer(const Duration(milliseconds: 400), () async {
+      final s = await searchSuggest(kw);
+      if (!mounted) return;
+      setState(() => _suggestions = s);
+    });
+  }
+
+  void _useKeyword(String kw) {
+    // 联想词形如「歌名 - 歌手」，取歌名部分更利于搜索
+    final k = kw.split(' - ').first.trim();
+    _webCtrl.text = k;
+    setState(() => _suggestions = []);
+    _searchWeb();
   }
 
   // ---- 全网搜索 ----
   Future<void> _searchWeb() async {
     final kw = _webCtrl.text.trim();
     if (kw.isEmpty) return;
+    FocusScope.of(context).unfocus();
     setState(() {
       _webLoading = true;
       _webErr = null;
+      _suggestions = [];
       _webTitle = '正在聚合全网曲库搜索「$kw」…';
     });
+    Store.pushRecentSearch(kw);
+    _recent = Store.recentSearches;
     try {
       final t = await webSearch(kw, sources: _sources);
+      if (!mounted) return;
       setState(() {
         _webResults = t;
         _webLoading = false;
@@ -768,6 +1003,7 @@ class _ArchivePageState extends State<ArchivePage> {
         }
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _webErr = '搜索失败，请检查网络后重试';
         _webLoading = false;
@@ -926,10 +1162,30 @@ class _ArchivePageState extends State<ArchivePage> {
                 child: TextField(
                   controller: _webCtrl,
                   textInputAction: TextInputAction.search,
+                  onChanged: _onWebInput,
                   onSubmitted: (_) => _searchWeb(),
-                  decoration: const InputDecoration(
-                      hintText: '搜歌名 / 歌手，如：周杰伦',
-                      prefixIcon: Icon(Icons.search, color: cDim)),
+                  decoration: InputDecoration(
+                    hintText: '搜歌名 / 歌手，如：周杰伦',
+                    prefixIcon: const Icon(Icons.search, color: cDim),
+                    suffixIcon: ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _webCtrl,
+                      builder: (c, v, _) => v.text.isEmpty
+                          ? const SizedBox.shrink()
+                          : IconButton(
+                              icon: const Icon(Icons.close, color: cDim, size: 18),
+                              onPressed: () {
+                                _webCtrl.clear();
+                                setState(() {
+                                  _suggestions = [];
+                                  _webResults = [];
+                                  _webErr = null;
+                                  _webTitle =
+                                      '全网聚合 · 每一首都可播放（B站音频无会员限制）';
+                                });
+                              },
+                            ),
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(width: 10),
@@ -979,6 +1235,67 @@ class _ArchivePageState extends State<ArchivePage> {
             ],
           ),
         ),
+        // 联想词 / 最近搜索（无结果时给出可点提示，避免空白页）
+        if (_suggestions.isNotEmpty)
+          SizedBox(
+            height: 44,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+              children: [
+                for (final s in _suggestions)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ActionChip(
+                      avatar: const Icon(Icons.north_west,
+                          size: 14, color: cDim),
+                      label: Text(s,
+                          style: const TextStyle(fontSize: 12, color: cText)),
+                      backgroundColor: cCard,
+                      side: BorderSide.none,
+                      onPressed: () => _useKeyword(s),
+                    ),
+                  ),
+              ],
+            ),
+          )
+        else if (_webCtrl.text.trim().isEmpty && _recent.isNotEmpty)
+          SizedBox(
+            height: 44,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(right: 6, top: 6),
+                  child: Text('最近：',
+                      style: TextStyle(color: cDim, fontSize: 12)),
+                ),
+                for (final s in _recent)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ActionChip(
+                      label: Text(s,
+                          style: const TextStyle(fontSize: 12, color: cDim)),
+                      backgroundColor: cCard,
+                      side: BorderSide.none,
+                      onPressed: () {
+                        _webCtrl.text = s;
+                        _searchWeb();
+                      },
+                    ),
+                  ),
+                TextButton(
+                  onPressed: () async {
+                    await Store.clearRecentSearches();
+                    setState(() => _recent = []);
+                  },
+                  child: const Text('清除',
+                      style: TextStyle(color: cDim, fontSize: 11)),
+                ),
+              ],
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 2, 20, 4),
           child: Align(
@@ -999,7 +1316,6 @@ class _ArchivePageState extends State<ArchivePage> {
                       : ListView.builder(
                           padding: const EdgeInsets.only(bottom: 12),
                           itemCount: _webResults.length,
-                          itemExtent: 62,
                           itemBuilder: (c, i) => _webTile(_webResults[i], i),
                         ),
         ),
@@ -1037,18 +1353,20 @@ class _ArchivePageState extends State<ArchivePage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(t.title,
-                      maxLines: 1,
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           color: Colors.white,
                           fontSize: 14.5,
+                          height: 1.25,
                           fontWeight: FontWeight.w500)),
                   const SizedBox(height: 3),
                   Text(
                     '${t.artist}${!isBili && t.album.isNotEmpty ? ' · ${t.album}' : ''}',
-                    maxLines: 1,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: cDim, fontSize: 12),
+                    style: const TextStyle(
+                        color: cDim, fontSize: 12, height: 1.25),
                   ),
                 ],
               ),
@@ -1358,9 +1676,374 @@ class MiniPlayer extends StatelessWidget {
   }
 }
 
-// ---------------- 全屏播放页 ----------------
-class PlayerPage extends StatelessWidget {
+// ---------------- 我的：收藏 / 最近播放 ----------------
+class MyPage extends StatefulWidget {
+  const MyPage({super.key});
+  @override
+  State<MyPage> createState() => _MyPageState();
+}
+
+class _MyPageState extends State<MyPage> {
+  int _seg = 0; // 0 = 收藏，1 = 历史
+
+  @override
+  void initState() {
+    super.initState();
+    // 播放切歌 / 收藏变化后自动刷新
+    gHandler.mediaItem.listen((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  List<Map<String, dynamic>> get _data =>
+      _seg == 0 ? Store.favorites : Store.history;
+
+  Future<void> _playAt(int index) async {
+    final list = _data.map((e) => PTrack.fromJson(e)).toList();
+    if (list.isEmpty) return;
+    try {
+      await gHandler.loadQueue(list, index);
+    } catch (e) {
+      if (mounted) playErrorSnackBar(context, e);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final data = _data;
+    return Column(
+      children: [
+        const PageHeader('我的', '收藏与最近播放 · 点击即播'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+          child: Row(
+            children: [
+              Expanded(child: _segBtn(0, '我的收藏', Icons.favorite)),
+              const SizedBox(width: 8),
+              Expanded(child: _segBtn(1, '最近播放', Icons.history)),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(
+            children: [
+              Text('${data.length} 首',
+                  style: const TextStyle(color: cDim, fontSize: 12)),
+              const Spacer(),
+              if (_seg == 1 && data.isNotEmpty)
+                TextButton(
+                  onPressed: () async {
+                    await Store.clearHistory();
+                    setState(() {});
+                  },
+                  child: const Text('清空',
+                      style: TextStyle(color: cDim, fontSize: 12)),
+                ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: data.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(_seg == 0 ? Icons.favorite_border : Icons.history,
+                          color: cDim, size: 44),
+                      const SizedBox(height: 12),
+                      Text(
+                        _seg == 0
+                            ? '还没有收藏\n在播放页点心形按钮即可收藏'
+                            : '还没有播放记录\n听过的歌曲会自动出现在这里',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            color: cDim, fontSize: 13, height: 1.5),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  itemCount: data.length,
+                  itemBuilder: (c, i) => _row(data[i], i),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _segBtn(int idx, String label, IconData icon) {
+    final sel = _seg == idx;
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: () => setState(() => _seg = idx),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: sel ? const Color(0xFF12202b) : cCard,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+              color: sel ? const Color(0xFF2a5a52) : Colors.transparent),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 17, color: sel ? cAccent : cDim),
+            const SizedBox(width: 7),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: sel ? FontWeight.w600 : FontWeight.normal,
+                    color: sel ? cAccent : cDim)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _row(Map<String, dynamic> j, int index) {
+    final t = PTrack.fromJson(j);
+    return InkWell(
+      onTap: () => _playAt(index),
+      onLongPress: () async {
+        if (_seg == 0) {
+          await Store.removeFavorite(t.id);
+          setState(() {});
+        }
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
+        child: Row(
+          children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                  color: cCard, borderRadius: BorderRadius.circular(6)),
+              child: Icon(t.isLocal ? Icons.audiotrack : Icons.graphic_eq,
+                  color: cAccent, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(t.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14.5,
+                          height: 1.25,
+                          fontWeight: FontWeight.w500)),
+                  const SizedBox(height: 3),
+                  Text(t.artist,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: cDim, fontSize: 12)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            if (_seg == 0)
+              IconButton(
+                icon: const Icon(Icons.favorite, color: cPink, size: 20),
+                visualDensity: VisualDensity.compact,
+                onPressed: () async {
+                  await Store.removeFavorite(t.id);
+                  setState(() {});
+                },
+              )
+            else
+              const Icon(Icons.play_arrow, color: cDim, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+class PlayerPage extends StatefulWidget {
   const PlayerPage({super.key});
+  @override
+  State<PlayerPage> createState() => _PlayerPageState();
+}
+
+class _PlayerPageState extends State<PlayerPage> {
+  double? _dragMs; // 拖动中的本地进度（避免被流刷新回跳）
+  Timer? _sleepTimer;
+  int _sleepLeft = 0; // 剩余秒数，0 = 未开启
+
+  @override
+  void dispose() {
+    _sleepTimer?.cancel();
+    super.dispose();
+  }
+
+  void _setSleep(int minutes) {
+    _sleepTimer?.cancel();
+    setState(() => _sleepLeft = minutes * 60);
+    if (minutes <= 0) return;
+    _sleepTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) return t.cancel();
+      setState(() => _sleepLeft--);
+      if (_sleepLeft <= 0) {
+        t.cancel();
+        _sleepLeft = 0;
+        gHandler.pause();
+      }
+    });
+  }
+
+  Future<void> _showSleepPicker() async {
+    final m = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: cCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (c) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(14),
+              child: Text('定时关闭',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600)),
+            ),
+            for (final m in const [0, 15, 30, 45, 60, 90])
+              ListTile(
+                title: Text(m == 0 ? '关闭定时' : '$m 分钟',
+                    style: const TextStyle(color: cText, fontSize: 14)),
+                trailing: (m == 0 && _sleepLeft == 0)
+                    ? const Icon(Icons.check, color: cAccent, size: 18)
+                    : null,
+                onTap: () => Navigator.pop(c, m),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (m != null) _setSleep(m);
+  }
+
+  void _cycleSpeed() {
+    final cur = gHandler.player.speed;
+    const speeds = [1.0, 1.25, 1.5, 2.0, 0.75];
+    final i = speeds.indexOf(cur);
+    final next = speeds[(i + 1) % speeds.length];
+    gHandler.setSpeed(next);
+    setState(() {});
+  }
+
+  Future<void> _copyShare() async {
+    final t = gHandler.currentTrack;
+    if (t == null) return;
+    await Clipboard.setData(ClipboardData(
+        text: '${t.title} - ${t.artist}（纯音播放器）'));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('歌曲信息已复制，可粘贴分享', style: TextStyle(fontSize: 13)),
+      duration: Duration(seconds: 2),
+      behavior: SnackBarBehavior.floating,
+    ));
+  }
+
+  Future<void> _toggleFav() async {
+    final t = gHandler.currentTrack;
+    if (t == null) return;
+    final on = await Store.toggleFavorite(t.toJson());
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(on ? '已加入收藏' : '已取消收藏',
+          style: const TextStyle(fontSize: 13)),
+      duration: const Duration(seconds: 2),
+      behavior: SnackBarBehavior.floating,
+    ));
+  }
+
+  Widget _actBtn(IconData icon, String label, Function onTap,
+      {bool active = false, Color activeColor = cAccent}) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => onTap(),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 19, color: active ? activeColor : cDim),
+            const SizedBox(height: 4),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 10.5, color: active ? activeColor : cDim)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 完整曲目信息（长标题/歌手名不截断）
+  void _showTrackDetail(MediaItem item, PTrack? t) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: cCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (c) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('曲目信息',
+                  style: TextStyle(
+                      color: cDim, fontSize: 12, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 10),
+              SelectableText(item.title,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      height: 1.35)),
+              const SizedBox(height: 8),
+              SelectableText('歌手：${item.artist ?? ''}',
+                  style: const TextStyle(color: cText, fontSize: 13)),
+              if ((item.album ?? '').isNotEmpty) ...[
+                const SizedBox(height: 4),
+                SelectableText('专辑：${item.album}',
+                    style: const TextStyle(color: cDim, fontSize: 13)),
+              ],
+              if (t != null && t.fmt.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('格式：${t.fmt}',
+                    style: const TextStyle(color: cDim, fontSize: 13)),
+              ],
+              if (gHandler.currentQuality.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('音质：${gHandler.currentQuality}',
+                    style: const TextStyle(color: cGold, fontSize: 13)),
+              ],
+              if (t != null && t.duration != null) ...[
+                const SizedBox(height: 4),
+                Text('时长：${fmtTime(t.duration!)}',
+                    style: const TextStyle(color: cDim, fontSize: 13)),
+              ],
+              const SizedBox(height: 6),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1437,21 +2120,31 @@ class PlayerPage extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 28),
                   child: Column(
                     children: [
-                      Text(item.title,
+                      InkWell(
+                        onTap: () => _showTrackDetail(item, track),
+                        child: Text(
+                          item.title,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          // 长标题自适应字号，尽量完整显示；点按可看完整信息
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: item.title.length > 46
+                                ? 14.5
+                                : (item.title.length > 28 ? 17 : 20),
+                            fontWeight: FontWeight.w700,
+                            height: 1.3,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(item.artist ?? '',
                           textAlign: TextAlign.center,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 20,
-                              fontWeight: FontWeight.w700,
-                              height: 1.3)),
-                      const SizedBox(height: 8),
-                      Text(item.artist ?? '',
-                          textAlign: TextAlign.center,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: cDim, fontSize: 14)),
+                              color: cDim, fontSize: 14, height: 1.3)),
                       const SizedBox(height: 10),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -1466,8 +2159,19 @@ class PlayerPage extends StatelessWidget {
                           ],
                           if (track?.fmt.isNotEmpty == true)
                             Badge(track!.fmt, cDim),
-                          if (track != null && track.fmt.isEmpty && !live)
+                          if (gHandler.currentQuality.isNotEmpty) ...[
+                            const SizedBox(width: 8),
+                            Badge(gHandler.currentQuality, cGold),
+                          ],
+                          if (track != null &&
+                              track.fmt.isEmpty &&
+                              gHandler.currentQuality.isEmpty &&
+                              !live)
                             const Badge('在线流媒体', cDim),
+                          if (_sleepLeft > 0) ...[
+                            const SizedBox(width: 8),
+                            Badge(fmtTime(Duration(seconds: _sleepLeft)), cDim),
+                          ],
                         ],
                       ),
                     ],
@@ -1492,17 +2196,27 @@ class PlayerPage extends StatelessWidget {
                                 final dur = ds.data;
                                 final pos = ps.data ?? Duration.zero;
                                 final ms = dur?.inMilliseconds ?? 0;
+                                // 拖动时用本地值，松手才真正 seek（不抖动）
+                                final shown = _dragMs ??
+                                    pos.inMilliseconds
+                                        .clamp(0, ms > 0 ? ms : 1)
+                                        .toDouble();
                                 return Column(children: [
                                   Slider(
-                                    value: ms > 0
-                                        ? pos.inMilliseconds
-                                            .clamp(0, ms)
-                                            .toDouble()
-                                        : 0,
+                                    value: ms > 0 ? shown : 0,
                                     max: ms > 0 ? ms.toDouble() : 1,
+                                    onChangeStart: ms > 0
+                                        ? (v) => setState(() => _dragMs = v)
+                                        : null,
                                     onChanged: ms > 0
-                                        ? (v) => gHandler
-                                            .seek(Duration(milliseconds: v.toInt()))
+                                        ? (v) => setState(() => _dragMs = v)
+                                        : null,
+                                    onChangeEnd: ms > 0
+                                        ? (v) {
+                                            gHandler.seek(
+                                                Duration(milliseconds: v.toInt()));
+                                            setState(() => _dragMs = null);
+                                          }
                                         : null,
                                   ),
                                   Padding(
@@ -1512,7 +2226,12 @@ class PlayerPage extends StatelessWidget {
                                       mainAxisAlignment:
                                           MainAxisAlignment.spaceBetween,
                                       children: [
-                                        Text(fmtTime(pos),
+                                        Text(
+                                            _dragMs != null
+                                                ? fmtTime(Duration(
+                                                    milliseconds:
+                                                        _dragMs!.toInt()))
+                                                : fmtTime(pos),
                                             style: const TextStyle(
                                                 color: cDim, fontSize: 11)),
                                         Text(
@@ -1544,19 +2263,45 @@ class PlayerPage extends StatelessWidget {
                       Container(
                         decoration: const BoxDecoration(
                             color: cAccent, shape: BoxShape.circle),
-                        child: StreamBuilder<bool>(
-                          stream: gHandler.playingStream,
-                          builder: (context, s) {
-                            final playing = s.data ?? false;
-                            return IconButton(
-                              iconSize: 40,
-                              icon: Icon(
-                                  playing ? Icons.pause : Icons.play_arrow,
-                                  color: const Color(0xFF06231d),
-                                  size: 36),
-                              onPressed: () => playing
-                                  ? gHandler.pause()
-                                  : gHandler.play(),
+                        child: StreamBuilder<AudioProcessingState>(
+                          stream: gHandler.processingStream,
+                          builder: (context, ps) {
+                            final busy =
+                                ps.data == AudioProcessingState.loading ||
+                                    ps.data == AudioProcessingState.buffering;
+                            return StreamBuilder<bool>(
+                              stream: gHandler.playingStream,
+                              builder: (context, s) {
+                                final playing = s.data ?? false;
+                                return Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    IconButton(
+                                      iconSize: 40,
+                                      icon: Icon(
+                                          playing
+                                              ? Icons.pause
+                                              : Icons.play_arrow,
+                                          color: const Color(0xFF06231d),
+                                          size: 36),
+                                      onPressed: () => playing
+                                          ? gHandler.pause()
+                                          : gHandler.play(),
+                                    ),
+                                    if (busy)
+                                      const SizedBox(
+                                        width: 44,
+                                        height: 44,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2.4,
+                                          valueColor:
+                                              AlwaysStoppedAnimation(
+                                                  Color(0xFF06231d)),
+                                        ),
+                                      ),
+                                  ],
+                                );
+                              },
                             );
                           },
                         ),
@@ -1567,6 +2312,66 @@ class PlayerPage extends StatelessWidget {
                             const Icon(Icons.skip_next, color: cText, size: 38),
                         onPressed: gHandler.skipToNext,
                       ),
+                    ],
+                  ),
+                ),
+                // 功能行：收藏 / 随机 / 循环 / 倍速 / 定时 / 分享
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _actBtn(
+                        Store.isFavorite(track?.id ?? '')
+                            ? Icons.favorite
+                            : Icons.favorite_border,
+                        Store.isFavorite(track?.id ?? '') ? '已收藏' : '收藏',
+                        _toggleFav,
+                        active: Store.isFavorite(track?.id ?? ''),
+                        activeColor: cPink,
+                      ),
+                      _actBtn(
+                        Icons.shuffle,
+                        '随机',
+                        () async {
+                          await gHandler.toggleShuffle();
+                          setState(() {});
+                        },
+                        active: gHandler.shuffle,
+                      ),
+                      _actBtn(
+                        gHandler.loopMode == 'one'
+                            ? Icons.repeat_one
+                            : (gHandler.loopMode == 'off'
+                                ? Icons.repeat_on_outlined
+                                : Icons.repeat),
+                        gHandler.loopMode == 'one'
+                            ? '单曲'
+                            : (gHandler.loopMode == 'off' ? '不循环' : '列表'),
+                        () async {
+                          final next = gHandler.loopMode == 'all'
+                              ? 'one'
+                              : (gHandler.loopMode == 'one' ? 'off' : 'all');
+                          await gHandler.setLoopMode(next);
+                          setState(() {});
+                        },
+                        active: gHandler.loopMode == 'one',
+                      ),
+                      _actBtn(
+                        Icons.speed,
+                        gHandler.player.speed == 1.0
+                            ? '倍速'
+                            : '${gHandler.player.speed}x',
+                        _cycleSpeed,
+                        active: gHandler.player.speed != 1.0,
+                      ),
+                      _actBtn(
+                        Icons.bedtime_outlined,
+                        '定时',
+                        _showSleepPicker,
+                        active: _sleepLeft > 0,
+                      ),
+                      _actBtn(Icons.ios_share, '分享', _copyShare),
                     ],
                   ),
                 ),

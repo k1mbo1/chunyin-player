@@ -360,7 +360,9 @@ Future<List<WebTrack>> qqSearch(String keyword, {int n = 30}) async {
 final _noiseMark = RegExp(
     r'伴奏|纯音乐|钢琴版|钢琴曲|吉他版|古筝版|小提琴版|八音盒|BGM|背景音乐|'
     r'白噪音|白噪|助眠|雨声|翻奏|[Cc]over|instrumental|铃声|琴谱|曲谱|'
-    r'教学|慢速|降调|升调|消音|无人声|变调|片段|DJ[^（）()]{0,8}版|[Rr]emix|混音版'
+    r'教学|教程|翻唱|搬运|慢速|降调|升调|消音|无人声|变调|片段|'
+    r'DJ[^（）()]{0,8}版|[Rr]emix|混音版'
+    r'|弦乐|交响|演奏|轻音乐|纯享|音乐纯享|串烧|歌单|合集|专辑全|精选|电台版|慢摇'
     r'|\b[Bb]eat\s*$',
     caseSensitive: false);
 
@@ -397,8 +399,111 @@ Future<List<WebTrack>> webSearch(String keyword,
     seen.add(key);
     out.add(t);
   }
+  // 相关度排序：按查询分词匹配（歌名精确 > 歌名包含 > 歌手/UP名），
+  // 同分时优先专业曲库源（网易云 > QQ > 酷我 > B站），保证首屏是可用原唱
+  final toks = _queryTokens(keyword);
+  final srcRank = {'netease': 0, 'qq': 1, 'kuwo': 2, 'bili': 3};
+  final idx = <WebTrack, int>{for (var i = 0; i < out.length; i++) out[i]: i};
+  out.sort((a, b) {
+    final sa = _relevance(a, toks), sb = _relevance(b, toks);
+    if (sa != sb) return sb.compareTo(sa);
+    final ra = srcRank[a.src] ?? 9, rb = srcRank[b.src] ?? 9;
+    if (ra != rb) return ra.compareTo(rb);
+    return (idx[a] ?? 0).compareTo(idx[b] ?? 0);
+  });
   return out;
 }
+
+final _tokenSplit = RegExp(r'[\s\-—_·/|、,，]+');
+
+List<String> _queryTokens(String q) => _norm(q)
+    .split(_tokenSplit)
+    .where((e) => e.isNotEmpty && e.length >= 2)
+    .toList();
+
+/// 搜索相关度：分词逐项比对歌名/歌手，取最高分
+int _relevance(WebTrack t, List<String> toks) {
+  if (toks.isEmpty) return 0;
+  final nt = _norm(_cleanTitle(t.title));
+  final na = _norm(t.artist);
+  var best = 0;
+  for (final k in toks) {
+    var s = 0;
+    if (nt == k) {
+      s = 5;
+    } else if (nt.contains(k)) {
+      s = 4;
+    } else if (na.contains(k)) {
+      // 歌手命中与歌名命中同档：同档时按源优先级排序，
+      // 避免“周杰伦”这类歌手查询被 B站标题党视频挤到首位
+      s = 4;
+    } else if (_norm(t.title).contains(k)) {
+      s = 2;
+    }
+    if (s > best) best = s;
+  }
+  return best;
+}
+
+/// 搜索联想（网易云 suggest，失败返回空；不影响主搜索）
+Future<List<String>> searchSuggest(String keyword) async {
+  final kw = keyword.trim();
+  if (kw.isEmpty) return const [];
+  try {
+    final r = await http.post(
+      Uri.parse('https://music.163.com/api/search/suggest/web'),
+      headers: {
+        ..._webHeaders,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: {'s': kw, 'limit': '6', 'csrf_token': ''},
+    ).timeout(const Duration(seconds: 8));
+    final d = json.decode(utf8.decode(r.bodyBytes));
+    final list = (d['result'] ?? []) as List;
+    final out = <String>[];
+    for (final it in list) {
+      final name = '${it['name'] ?? ''}'.trim();
+      if (name.isEmpty) continue;
+      final ar = (it['artists'] ?? []) as List;
+      final artist = ar.isEmpty ? '' : '${ar[0]['name'] ?? ''}';
+      out.add(artist.isEmpty ? name : '$name - $artist');
+    }
+    return out;
+  } catch (_) {
+    return const [];
+  }
+}
+
+// ---------------- 直链解析缓存（秒开 + 减少重复请求） ----------------
+const _urlTtl = Duration(minutes: 20);
+final _urlCache = <String, ({ResolvedUrl r, DateTime at})>{};
+final _inflight = <String, Future<ResolvedUrl?>>{};
+
+/// 已解析直链缓存（播放页展示音质、切歌秒开）
+ResolvedUrl? cachedResolve(String key) {
+  final c = _urlCache[key];
+  if (c == null) return null;
+  if (DateTime.now().difference(c.at) > _urlTtl) {
+    _urlCache.remove(key);
+    return null;
+  }
+  return c.r;
+}
+
+void cacheResolve(String key, ResolvedUrl r) {
+  _urlCache[key] = (r: r, at: DateTime.now());
+  if (_urlCache.length > 200) {
+    // 简单淘汰：删最早的 1/4
+    final olds = _urlCache.entries.toList()
+      ..sort((a, b) => a.value.at.compareTo(b.value.at));
+    for (final e in olds.take(50)) {
+      _urlCache.remove(e.key);
+    }
+  }
+}
+
+String resolveKey(String title, String artist, String src, String rid) =>
+    '$src|$rid|${_cleanTitle(title)}|${_firstArtist(artist)}';
 
 // ---------------- B 站音源（视频稿件音频轨，含 Hi-Res 无损） ----------------
 // 链路（免登录）：finger/spi 拿 buvid3/buvid4 → search/type 搜索 →
@@ -477,6 +582,14 @@ Future<List<WebTrack>> biliSearch(String keyword, {int n = 30}) async {
         .replaceAll('&gt;', '>')
         .trim();
     if (_noiseMark.hasMatch(title)) continue;
+    // B站是 UGC 内容，标题常与搜索无关（vlog/合集/切片）：
+    // 要求标题或 UP 名至少命中一个查询词，降低噪音
+    final toks = _queryTokens(keyword);
+    if (toks.isNotEmpty &&
+        !toks.any((k) =>
+            _norm(title).contains(k) || _norm('${it['author'] ?? ''}').contains(k))) {
+      continue;
+    }
     out.add(WebTrack(
       title,
       '${it['author'] ?? 'B站UP主'}',
@@ -493,7 +606,9 @@ Future<List<WebTrack>> biliSearch(String keyword, {int n = 30}) async {
 class ResolvedUrl {
   final String url;
   final Map<String, String> headers;
-  const ResolvedUrl(this.url, this.headers);
+  final String quality; // 例如 320kbps / Hi-Res / FLAC
+
+  const ResolvedUrl(this.url, this.headers, {this.quality = ''});
 }
 
 Future<ResolvedUrl?> biliResolve(String rid) async {
@@ -521,9 +636,11 @@ Future<ResolvedUrl?> biliResolve(String rid) async {
   final d = json.decode(utf8.decode(pu.bodyBytes))['data'] ?? {};
   final dash = d['dash'] ?? {};
   String? url;
+  String quality = '';
   final flac = dash['flac'];
   if (flac is Map && (flac['audio'] ?? []).isNotEmpty) {
     url = '${flac['audio'][0]['baseUrl']}';
+    quality = 'Hi-Res 无损';
   }
   url ??= (() {
     final audios = (dash['audio'] ?? []) as List;
@@ -532,6 +649,8 @@ Future<ResolvedUrl?> biliResolve(String rid) async {
     for (final a in audios) {
       if ((a['bandwidth'] ?? 0) > (best['bandwidth'] ?? 0)) best = a;
     }
+    final bw = (best['bandwidth'] ?? 0) as num;
+    if (bw > 0) quality = '${(bw / 1000).round()}kbps';
     return '${best['baseUrl']}';
   })();
   url ??= (((d['durl'] ?? []) as List).isNotEmpty)
@@ -542,7 +661,7 @@ Future<ResolvedUrl?> biliResolve(String rid) async {
   return ResolvedUrl(url, {
     'Referer': 'https://www.bilibili.com/video/$page',
     'User-Agent': _biliUa,
-  });
+  }, quality: quality);
 }
 
 
@@ -624,8 +743,27 @@ Future<bool> _urlLooksFull(String url, double duration) async {
 
 /// 多源自动兜底解析：优先原平台直链，失败则按“歌名 歌手”
 /// 跨平台匹配免费可播来源（多级降级 + 直链完整性校验）。
+/// 带 20 分钟直链缓存与并发去重（同一首歌同时只解析一次）。
 /// 返回 ResolvedUrl（B站直链含播放所需 Referer 头）
 Future<ResolvedUrl?> webResolveAuto(String title, String artist, String src,
+    String rid, double duration) async {
+  final key = resolveKey(title, artist, src, rid);
+  final cached = cachedResolve(key);
+  if (cached != null) return cached;
+  final running = _inflight[key];
+  if (running != null) return running;
+  final fut = _webResolveAutoImpl(title, artist, src, rid, duration);
+  _inflight[key] = fut;
+  try {
+    final r = await fut;
+    if (r != null) cacheResolve(key, r);
+    return r;
+  } finally {
+    _inflight.remove(key);
+  }
+}
+
+Future<ResolvedUrl?> _webResolveAutoImpl(String title, String artist, String src,
     String rid, double duration) async {
   if (src == 'bili') {
     try {
@@ -635,7 +773,10 @@ Future<ResolvedUrl?> webResolveAuto(String title, String artist, String src,
     }
   }
   final url = await webResolve(src, rid);
-  if (url != null) return ResolvedUrl(url, const {});
+  if (url != null) {
+    return ResolvedUrl(url, const {},
+        quality: src == 'kuwo' ? '320kbps' : '128kbps');
+  }
   final a1 = _firstArtist(artist);
   final t1 = _cleanTitle(title);
   final queries = ['$title $a1', '$t1 $a1', t1];
@@ -654,15 +795,24 @@ Future<ResolvedUrl?> webResolveAuto(String title, String artist, String src,
       if (s >= 3 && !tried.contains(c.rid)) scored.add((s, c));
     }
     scored.sort((x, y) => y.$1.compareTo(x.$1));
-    // 依次尝试高分候选，直链需通过完整性校验（拒绝试听片段）
-    for (final (_, c) in scored.take(4)) {
+    // 同档候选并发探测，取最先通过完整性校验的一条（把兜底耗时从数秒降到 1 档）
+    ResolvedUrl? hit;
+    final pick = scored.take(4).toList();
+    await Future.wait(pick.map((e) async {
+      if (hit != null) return;
+      final c = e.$2;
+      if (tried.contains(c.rid)) return;
       tried.add(c.rid);
-      final u = await webResolve('kuwo', c.rid);
-      if (u != null &&
-          await _urlLooksFull(u, duration > 0 ? duration : c.duration)) {
-        return ResolvedUrl(u, const {});
-      }
-    }
+      try {
+        final u = await webResolve('kuwo', c.rid);
+        if (u == null || hit != null) return;
+        if (await _urlLooksFull(
+            u, duration > 0 ? duration : c.duration)) {
+          hit ??= ResolvedUrl(u, const {}, quality: '320kbps · 跨源匹配');
+        }
+      } catch (_) {}
+    }));
+    if (hit != null) return hit;
   }
   return null;
 }

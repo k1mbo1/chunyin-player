@@ -1,7 +1,7 @@
 name: chunyin_mobile
 description: 纯音播放器手机版 —— 顶级音质音乐播放器（本地无损 + 全球电台 + 海量曲库）
 publish_to: 'none'
-version: 1.4.1+6
+version: 1.5.0+7
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -15,6 +15,7 @@ dependencies:
   on_audio_query: ^2.9.0
   permission_handler: ^11.3.0
   cupertino_icons: ^1.0.8
+  shared_preferences: 2.3.2
 
 dev_dependencies:
   flutter_test:
