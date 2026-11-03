@@ -17,7 +17,7 @@ import UIKit
 
   // 自建轻量键值存储（UserDefaults），与 Android 端 chunyin/kv 语义一致
   private func registerKV(_ engineBridge: FlutterImplicitEngineBridge) {
-    let reg = engineBridge.pluginRegistry.registrar(forPlugin: "ChunyinKV")
+    guard let reg = engineBridge.pluginRegistry.registrar(forPlugin: "ChunyinKV") else { return }
     let ch = FlutterMethodChannel(name: "chunyin/kv",
                                   binaryMessenger: reg.messenger())
     let d = UserDefaults.standard
