@@ -15,7 +15,6 @@ dependencies:
   on_audio_query: ^2.9.0
   permission_handler: ^11.3.0
   cupertino_icons: ^1.0.8
-  shared_preferences: 2.3.2
 
 dev_dependencies:
   flutter_test:
